@@ -17,7 +17,7 @@ from config import BOT_TOKEN
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwSXVi6APyb3Zz1eLchxTxERPXwNe3f6ecKRFV3CH7dhfqGB9djedwe_aB7-g4j4YY/exec"
 
 # --- ОДНА группа: фото + итог ---
-TARGET_GROUP_ID = -1003667550505
+TARGET_GROUP_ID = -1003451445410
 
 # --- Прайс (Google Sheet): Лист1, колонки: Продукт общий | Продукт | Цена ---
 PRICES_SHEET_ID = "1SdI0i-vAkkEpdguFzdSp9_-JZAAhIZzBO7IZ55YUX_A"
