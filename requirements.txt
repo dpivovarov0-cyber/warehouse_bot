@@ -1,4 +1,0 @@
-aiogram==3.*
-gspread
-google-auth
-openpyxl
