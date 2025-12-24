@@ -305,6 +305,24 @@ async def start(message: Message):
     )
     await message.answer("Привет! Запусти приёмку товара:", reply_markup=keyboard)
 
+@dp.message(Command("reset"), lambda m: m.chat.type == "private")
+async def hard_reset_command(message: Message):
+    user_id = message.from_user.id
+
+    # жёсткий сброс приёмки
+    reset_reception(user_id)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Начать новую приёмку", callback_data="new_reception")]
+        ]
+    )
+
+    await message.answer(
+        "❌ Приёмка полностью сброшена.\nМожно начинать заново.",
+        reply_markup=keyboard
+    )
+
 
 @dp.callback_query(lambda c: c.data == "new_reception")
 async def new_reception(callback):
