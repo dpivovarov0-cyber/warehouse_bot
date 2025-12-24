@@ -34,6 +34,10 @@ dp = Dispatcher()
 # USER_STATE[user_id] = {"mode": "...", "fam_id": int|None, "prod_id": int|None}
 USER_STATE = {}
 
+USER_UI_MESSAGE_ID = {}
+
+DRAFT_RECEPTIONS = {}
+
 # USER_DATA[user_id] = {
 #   "shop": str,
 #   "photos": [file_id,...],
@@ -49,6 +53,10 @@ USER_DATA = {}
 def reset_reception(user_id: int):
     USER_DATA.pop(user_id, None)
     USER_STATE.pop(user_id, None)
+    DRAFT_RECEPTIONS.pop(user_id, None)
+
+    # ❗ сбрасываем UI-сообщение текущей приёмки
+    USER_UI_MESSAGE_ID.pop(user_id, None)
 
 
 def fmt(n):
@@ -291,6 +299,58 @@ def render_report_image(shop: str, rows: list, extra: float = 0.0) -> bytes:
     img.save(buf, format="PNG")
     return buf.getvalue()
 
+def build_group_report_text(data: dict, status: str) -> str:
+    """
+    status: 'draft' | 'edit' | 'final'
+    """
+    shop = data.get("shop", "")
+    items = data.get("items", [])
+    extra = float(data.get("extra", 0.0))
+
+    # подтягиваем цены
+    price_map, _ = fetch_price_and_catalog()
+
+    lines = []
+
+    # ---- шапка ----
+    if status == "draft":
+        lines.append("📝 Черновик приёмки")
+    elif status == "edit":
+        lines.append("✏️ Черновик приёмки (редактируется)")
+    else:
+        lines.append("✅ Приёмка сохранена")
+
+    lines.append(f"Магазин: {shop}")
+    lines.append("")
+
+    # ---- позиции ----
+    total = 0.0
+    for it in items:
+        price = float(price_map.get((it["family"], it["name"]), 0.0))
+        qty = float(it["qty"])
+        summ = qty * price
+        total += summ
+
+        lines.append(
+            f"• {it['name']} — {qty} × {fmt(price)} = {fmt(summ)}"
+        )
+
+    # ---- доп. сумма ----
+    if extra > 0:
+        lines.append("")
+        lines.append(f"Доп. сумма: {fmt(extra)}")
+        total += extra
+
+    # ---- итог ----
+    lines.append("")
+    lines.append(f"ИТОГО: {fmt(total)}")
+
+    # ---- подсказка ----
+    if status in ("draft", "edit"):
+        lines.append("")
+        lines.append("⏳ Можно редактировать 10 минут")
+
+    return "\n".join(lines)
 
 
 @dp.message(Command("id"), lambda m: m.chat.type == "private")
@@ -309,6 +369,9 @@ async def start(message: Message):
 async def hard_reset_command(message: Message):
     user_id = message.from_user.id
 
+    # ❗ сбрасываем UI-сообщение текущей приёмки
+    USER_UI_MESSAGE_ID.pop(user_id, None)
+
     # жёсткий сброс приёмки
     reset_reception(user_id)
 
@@ -324,12 +387,18 @@ async def hard_reset_command(message: Message):
     )
 
 
+
 @dp.callback_query(lambda c: c.data == "new_reception")
 async def new_reception(callback):
     user_id = callback.from_user.id
-    USER_DATA[user_id] = {"shop": "", "photos": [], "catalog": {}}
-    USER_STATE[user_id] = {"mode": "wait_shop", "fam_id": None, "prod_id": None}
 
+    # 1) полный сброс ВСЕГО, включая UI-сообщение
+    reset_reception(user_id)
+
+    # 2) ставим режим ожидания магазина
+    USER_STATE[user_id] = {"mode": "wait_shop"}
+
+    # 3) просим ввести магазин
     await callback.message.answer("Введите магазин (любой текст):")
     await callback.answer()
 
@@ -347,10 +416,27 @@ async def choose_family(callback):
     fam_id = int(callback.data.split("_")[1])
     USER_STATE[user_id] = {"mode": "choose_product", "fam_id": fam_id, "prod_id": None}
 
-    await callback.message.answer(
-        "Выберите продукт и укажите количество:",
-        reply_markup=products_keyboard(user_id, fam_id)
+    text = (
+        "🧾 Приёмка товара\n\n"
+        "➡️ Выберите продукт и укажите количество:"
     )
+
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text,
+            reply_markup=products_keyboard(user_id, fam_id)
+        )
+    else:
+        msg = await callback.message.answer(
+            text,
+            reply_markup=products_keyboard(user_id, fam_id)
+        )
+        USER_UI_MESSAGE_ID[user_id] = msg.message_id
+
     await callback.answer()
 
 
@@ -359,10 +445,24 @@ async def back_to_families(callback):
     user_id = callback.from_user.id
     USER_STATE[user_id] = {"mode": "choose_family", "fam_id": None, "prod_id": None}
 
-    await callback.message.answer(
-        "Выберите категорию (Продукт общий):",
-        reply_markup=families_keyboard(user_id)
-    )
+    text = "🧾 Приёмка товара\n\n➡️ Выберите категорию (Продукт общий):"
+
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text,
+            reply_markup=families_keyboard(user_id)
+        )
+    else:
+        msg = await callback.message.answer(
+            text,
+            reply_markup=families_keyboard(user_id)
+        )
+        USER_UI_MESSAGE_ID[user_id] = msg.message_id
+
     await callback.answer()
 
 
@@ -384,10 +484,34 @@ async def choose_product(callback):
         await callback.answer()
         return
 
-    # запоминаем текущую категорию, чтобы после ввода количества вернуться в неё
-    USER_STATE[user_id] = {"mode": "wait_qty", "fam_id": p["fam_id"], "prod_id": prod_id}
+    # ✅ ВОТ ЭТА СТРОКА БЫЛА НУЖНА
+    product_name = p["name"]
 
-    await callback.message.answer(f"📦 {p['name']}\nВведите количество:")
+    # запоминаем текущую категорию, чтобы после ввода количества вернуться в неё
+    USER_STATE[user_id] = {
+        "mode": "wait_qty",
+        "fam_id": p["fam_id"],
+        "prod_id": prod_id
+    }
+
+    text = (
+        "🧾 Приёмка товара\n\n"
+        f"📄 Товар: {product_name}\n"
+        "✍️ Введите количество (можно 1.5)"
+    )
+
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text
+        )
+    else:
+        msg = await callback.message.answer(text)
+        USER_UI_MESSAGE_ID[user_id] = msg.message_id
+
     await callback.answer()
 
 
@@ -447,6 +571,9 @@ async def reset_confirm(callback):
 async def reset_yes(callback):
     user_id = callback.from_user.id
 
+    # ❗ сбрасываем UI-сообщение текущей приёмки
+    USER_UI_MESSAGE_ID.pop(user_id, None)
+
     USER_STATE.pop(user_id, None)
     USER_DATA.pop(user_id, None)
 
@@ -468,10 +595,17 @@ async def reset_no(callback):
     user_id = callback.from_user.id
 
     # возвращаем пользователя туда, где он был
-    await callback.message.answer(
-        "Ок, продолжаем приёмку 👌",
-        reply_markup=families_keyboard(user_id)
-    )
+    text = "🧾 Приёмка товара\n\n➡️ Выберите категорию (Продукт общий):"
+
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text,
+            reply_markup=families_keyboard(user_id)
+        )
     await callback.answer()
 
 
@@ -504,7 +638,6 @@ async def photos_done(callback):
     shop = data.get("shop", "")
     extra = float(data.get("extra", 0.0))
 
-
     ensure_user_catalog(user_id)
     cat = data.get("catalog", {})
     products = cat.get("products", [])
@@ -515,11 +648,181 @@ async def photos_done(callback):
         pid = p["prod_id"]
         qty = float(data.get(pid, 0) or 0)
         if qty > 0:
-            items.append({"family": p["family"], "name": p["name"], "qty": qty})
+            items.append({
+                "prod_id": p["prod_id"],   # 🔑 КЛЮЧ
+                "family": p["family"],
+                "name": p["name"],
+                "qty": qty
+            })
 
+
+    # --- сохраняем черновик (ничего пока не пишем в таблицу) ---
+    draft = DRAFT_RECEPTIONS.get(user_id)
+
+    if not draft:
+        # первый раз — создаём черновик
+        draft = {
+            "data": {},
+            "created_at": time.time(),
+            "finalized": False,
+            "group_msg_id": None,
+        }
+        DRAFT_RECEPTIONS[user_id] = draft
+
+    # обновляем данные черновика
+    draft["data"] = {
+        "shop": shop,
+        "extra": extra,
+        "items": items,
+        "photos": data.get("photos", []),
+        "author": callback.from_user.full_name,
+    }
+
+
+    # --- сообщение в группу о черновике ---
+    group_text = build_group_report_text(
+        DRAFT_RECEPTIONS[user_id]["data"],
+        status="draft"
+    )
+
+    draft = DRAFT_RECEPTIONS[user_id]
+    group_msg_id = draft.get("group_msg_id")
+
+    if group_msg_id:
+        # уже есть сообщение → редактируем
+        try:
+            await bot.edit_message_text(
+                chat_id=TARGET_GROUP_ID,
+                message_id=group_msg_id,
+                text=group_text
+            )
+        except Exception:
+            pass
+    else:
+        # первого раза ещё не было → создаём
+        msg = await bot.send_message(
+            chat_id=TARGET_GROUP_ID,
+            text=group_text
+        )
+        draft["group_msg_id"] = msg.message_id
+
+    # --- кнопки пользователю ---
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Исправить приёмку", callback_data="edit_draft")],
+            [InlineKeyboardButton(text="✅ Подтвердить и сохранить", callback_data="finalize_draft")],
+        ]
+    )
+
+    await callback.message.answer(
+        "🧾 Приёмка сформирована.\n\n"
+        "✏️ Можно исправить последнюю приёмку\n"
+        "⏳ Автосохранение через 10 минут.",
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+    return
+
+
+@dp.callback_query(lambda c: c.data == "edit_draft")
+async def edit_draft(callback):
+    user_id = callback.from_user.id
+
+   # ❗ сбрасываем UI-сообщение текущей приёмки
+    USER_UI_MESSAGE_ID.pop(user_id, None)
+
+    draft = DRAFT_RECEPTIONS.get(user_id)
+    if not draft:
+        await callback.answer("Черновик не найден", show_alert=True)
+        return
+
+    d = draft["data"]
+
+    # === ВОССТАНАВЛИВАЕМ ДАННЫЕ ПРИЁМКИ ===
+    # фиксируем каталог (ВАЖНО)
+    ensure_user_catalog(user_id)
+
+    # полностью пересобираем USER_DATA
+    USER_DATA[user_id] = {
+        "shop": d.get("shop"),
+        "extra": d.get("extra", 0.0),
+    }
+
+    # восстанавливаем количества
+    for item in d.get("items", []):
+        prod_id = item.get("prod_id")
+        qty = item.get("qty", 0)
+        if isinstance(prod_id, int):
+            USER_DATA[user_id][prod_id] = qty
+
+    # === ВОССТАНАВЛИВАЕМ СОСТОЯНИЕ ===
+    USER_STATE[user_id] = {
+        "mode": "choose_family",
+        "fam_id": None,
+        "prod_id": None
+    }
+
+    # === ОБНОВЛЯЕМ ГРУППОВОЕ СООБЩЕНИЕ ===
+    group_msg_id = draft.get("group_msg_id")
+    if group_msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=TARGET_GROUP_ID,
+                message_id=group_msg_id,
+                text=build_group_report_text(draft["data"], status="edit")
+            )
+        except Exception:
+            pass
+
+    # === ОБНОВЛЯЕМ ОСНОВНОЕ UI-СООБЩЕНИЕ ===
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    text = (
+        "✏️ Исправление приёмки\n\n"
+        "➡️ Выберите категорию:"
+    )
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text,
+            reply_markup=families_keyboard(user_id)
+        )
+    else:
+        # на всякий случай (если UI вдруг потерялся)
+        msg = await callback.message.answer(
+            text,
+            reply_markup=families_keyboard(user_id)
+        )
+        USER_UI_MESSAGE_ID[user_id] = msg.message_id
+    await callback.answer()
+
+
+
+@dp.callback_query(lambda c: c.data == "finalize_draft")
+async def finalize_draft(callback):
+    user_id = callback.from_user.id
+
+    draft = DRAFT_RECEPTIONS.get(user_id)
+    if not draft:
+        await callback.answer("Черновик не найден", show_alert=True)
+        return
+
+    if draft.get("finalized"):
+        await callback.answer("Приёмка уже сохранена", show_alert=True)
+        return
+
+    draft["finalized"] = True
+
+    d = draft["data"]
+    shop = d.get("shop", "")
+    items = d.get("items", [])
+
+    # ---------- ЗАПИСЬ В ТАБЛИЦУ ----------
     payload = {"shop": shop, "items": items}
 
-    # 1) журнал
     try:
         r = requests.post(
             APPS_SCRIPT_URL,
@@ -528,71 +831,44 @@ async def photos_done(callback):
             timeout=20
         )
     except Exception as e:
-        await callback.message.answer(f"Ошибка отправки в таблицу: {e}")
+        await callback.message.answer(f"Ошибка записи в таблицу: {e}")
         return
 
     if r.status_code != 200 or "OK" not in r.text:
         await callback.message.answer(f"Ошибка записи в таблицу: {r.text[:200]}")
         return
 
-    # 2) итог в группу (картинка) — цены из прайса
-    try:
-        price_map, _ = fetch_price_and_catalog()
-        report_rows = []
-        for it in items:
-            price = float(price_map.get((it["family"], it["name"]), 0.0))
-            qty = float(it["qty"])
-            report_rows.append({"name": it["name"], "qty": qty, "price": price, "sum": qty * price})
-
-        png = render_report_image(
-            shop=shop,
-            rows=report_rows,
-            extra=extra
-        )
-        await bot.send_photo(
-            chat_id=TARGET_GROUP_ID,
-            photo=png,
-            caption=f"Итог приёмки\nМагазин: {shop}"
-        )
-    except Exception:
-        # запасной вариант — текстом
+    # ---------- ОБНОВЛЯЕМ СООБЩЕНИЕ В ГРУППЕ ----------
+    group_msg_id = draft.get("group_msg_id")
+    if group_msg_id:
+        final_text = build_group_report_text(draft["data"], status="final")
         try:
-            price_map, _ = fetch_price_and_catalog()
-            lines = [f"Итог приёмки\nМагазин: {shop}"]
-            total = 0.0
-
-            for it in items:
-                price = float(price_map.get((it["family"], it["name"]), 0.0))
-                s = float(it["qty"]) * price
-                total += s
-                lines.append(f"{it['name']} — {it['qty']} × {fmt(price)} = {fmt(s)}")
-
-            if extra > 0:
-                lines.append(f"Доп. сумма: {fmt(extra)}")
-                total += extra
-
-            lines.append(f"Итого: {fmt(total)}")
-
-            await bot.send_message(chat_id=TARGET_GROUP_ID, text="\n".join(lines))
+            await bot.edit_message_text(
+                chat_id=TARGET_GROUP_ID,
+                message_id=group_msg_id,
+                text=final_text
+            )
         except Exception:
             pass
 
-                # ---------- итог пользователю + кнопка ----------
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🏁 Начать новую приёмку", callback_data="new_reception")]
-            ]
-        )
+    # ---------- ЧИСТИМ ДАННЫЕ ----------
+    DRAFT_RECEPTIONS.pop(user_id, None)
+    reset_reception(user_id)
 
-        await callback.message.answer(
-            "Приёмка завершена ✅\nЖурнал записан. Фото и итог отправлены в группу.",
-            reply_markup=keyboard
-        )
+    # ---------- СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЮ ----------
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏁 Начать новую приёмку", callback_data="new_reception")]
+        ]
+    )
 
-    USER_STATE.pop(user_id, None)
-    USER_DATA.pop(user_id, None)
+    await callback.message.answer(
+        "✅ Приёмка сохранена.\n"
+        "Журнал заполнен, сообщение в группе обновлено.",
+        reply_markup=keyboard
+    )
+
     await callback.answer()
-
 
 
 @dp.message(lambda m: m.chat.type == "private")
@@ -616,10 +892,24 @@ async def get_text(message: Message):
 
         USER_STATE[user_id] = {"mode": "choose_family", "fam_id": None, "prod_id": None}
 
-        await message.answer(
-            f"Магазин: {shop}\nВыберите категорию (Продукт общий):",
-            reply_markup=families_keyboard(user_id)
-        )
+        text = "🧾 Приёмка товара\n\n➡️ Выберите категорию (Продукт общий):"
+
+        ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+        if ui_msg_id:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=ui_msg_id,
+                text=text,
+                reply_markup=families_keyboard(user_id)
+            )
+        else:
+            msg = await message.answer(
+                text,
+                reply_markup=families_keyboard(user_id)
+            )
+            USER_UI_MESSAGE_ID[user_id] = msg.message_id
+
         return
 
     # Ввод количества
@@ -629,7 +919,7 @@ async def get_text(message: Message):
         try:
             qty = float(raw)
         except ValueError:
-            await message.answer("Введите количество числом, например: 1,5")
+            await message.answer("Введите количество числом, например 1 или 1.5")
             return
 
         if qty < 0:
@@ -639,17 +929,41 @@ async def get_text(message: Message):
         prod_id = state.get("prod_id")
         fam_id = state.get("fam_id")
 
-
         if not isinstance(prod_id, int) or not isinstance(fam_id, int):
             await message.answer("Ошибка состояния. Начните заново: /start")
             return
 
+        # сохраняем количество
         USER_DATA.setdefault(user_id, {})
         USER_DATA[user_id][prod_id] = qty
 
-        # возвращаемся в список продуктов текущей категории
-        USER_STATE[user_id] = {"mode": "choose_product", "fam_id": fam_id, "prod_id": None}
-        await message.answer("Количество сохранено", reply_markup=products_keyboard(user_id, fam_id))
+        # возвращаемся в режим выбора продукта
+        USER_STATE[user_id] = {
+            "mode": "choose_product",
+            "fam_id": fam_id,
+            "prod_id": None
+        }
+
+        # === ОБНОВЛЯЕМ ОСНОВНОЕ UI-СООБЩЕНИЕ ===
+        ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+    
+        if ui_msg_id:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=ui_msg_id,
+                text="➡️ Выберите продукт и укажите количество:",
+                reply_markup=products_keyboard(user_id, fam_id)
+            )
+        else:
+            msg = await message.answer(
+                "➡️ Выберите продукт и укажите количество:",
+                reply_markup=products_keyboard(user_id, fam_id)
+            )
+            USER_UI_MESSAGE_ID[user_id] = msg.message_id
+
+        return
+
+
     # Ввод дополнительной суммы
     if mode == "wait_extra":
         raw = (message.text or "").strip().replace(",", ".")
@@ -667,8 +981,15 @@ async def get_text(message: Message):
         USER_DATA.setdefault(user_id, {})
         USER_DATA[user_id]["extra"] = extra
 
-        # переходим к фото
         USER_STATE[user_id] = {"mode": "wait_photos", "fam_id": None, "prod_id": None}
+
+        ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+        text = (
+            "🧾 Приёмка товара\n\n"
+            "📸 Пришлите фото принятого товара.\n"
+            "Когда закончите — нажмите «Готово»."
+        )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -676,18 +997,83 @@ async def get_text(message: Message):
             ]
         )
 
-        await message.answer(
-            f"Дополнительная сумма принята: {fmt(extra)}\n\n"
-            "Теперь пришлите фото принятого товара.\n"
-            "Когда закончите — нажмите «Готово».",
-            reply_markup=keyboard
-        )
-        return
+        if ui_msg_id:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=ui_msg_id,
+                text=text,
+                reply_markup=keyboard
+            )
+        else:
+            msg = await message.answer(text, reply_markup=keyboard)
+            USER_UI_MESSAGE_ID[user_id] = msg.message_id
 
         return
+
+
+async def auto_finalize_drafts():
+    while True:
+        now = time.time()
+
+        for user_id, draft in list(DRAFT_RECEPTIONS.items()):
+            # если уже сохранено — не трогаем
+            if draft.get("finalized"):
+                continue
+
+            # если ещё не прошло 10 минут — ждём
+            if now - draft["created_at"] < 600:
+                continue
+
+            # помечаем как сохранённый, чтобы не было гонок
+            draft["finalized"] = True
+
+            d = draft["data"]
+            shop = d.get("shop", "")
+            items = d.get("items", [])
+
+            payload = {"shop": shop, "items": items}
+
+            try:
+                r = requests.post(
+                    APPS_SCRIPT_URL,
+                    data=json.dumps(payload),
+                    headers={"Content-Type": "application/json"},
+                    timeout=20
+                )
+                if r.status_code != 200 or "OK" not in r.text:
+                    # если не записалось — откатываем флаг и попробуем позже
+                    draft["finalized"] = False
+                    continue
+            except Exception:
+                draft["finalized"] = False
+                continue
+
+            # --- ОБНОВЛЯЕМ СООБЩЕНИЕ В ГРУППЕ ---
+            group_msg_id = draft.get("group_msg_id")
+            if group_msg_id:
+                try:
+                    final_text = build_group_report_text(
+                        draft["data"],
+                        status="final"
+                    )
+                    await bot.edit_message_text(
+                        chat_id=TARGET_GROUP_ID,
+                        message_id=group_msg_id,
+                        text=final_text
+                    )
+                except Exception:
+                    pass
+
+            # --- ЧИСТИМ СОСТОЯНИЕ ---
+            DRAFT_RECEPTIONS.pop(user_id, None)
+            USER_STATE.pop(user_id, None)
+            USER_DATA.pop(user_id, None)
+
+        await asyncio.sleep(30)
 
 
 async def main():
+    asyncio.create_task(auto_finalize_drafts())
     await dp.start_polling(bot)
 
 
