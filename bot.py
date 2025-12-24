@@ -180,7 +180,7 @@ def families_keyboard(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Завершить приёмку", callback_data="finish")]
     )
     buttons.append(
-        [InlineKeyboardButton(text="♻️ Сбросить приёмку", callback_data="reset_confirm")]
+        [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
     )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -207,7 +207,7 @@ def products_keyboard(user_id: int, fam_id: int) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="back_fams")])
     buttons.append([InlineKeyboardButton(text="✅ Завершить приёмку", callback_data="finish")])
     buttons.append(
-        [InlineKeyboardButton(text="♻️ Сбросить приёмку", callback_data="reset_confirm")]
+        [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
     )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -395,7 +395,7 @@ async def finish_reception(callback):
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="♻️ Сбросить приёмку", callback_data="reset_confirm")]
+            [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
         ]
     )
 
