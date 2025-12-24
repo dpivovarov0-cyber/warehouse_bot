@@ -522,10 +522,10 @@ async def finish_reception(callback):
 
     # если магазин ещё не введён
     if state.get("mode") == "wait_shop":
-        await callback.message.answer(
-            "Сначала введите магазин, потом завершайте приёмку."
+        await callback.answer(
+            "Сначала введите магазин, потом завершайте приёмку.",
+            show_alert=True
         )
-        await callback.answer()
         return
 
     # новый шаг: ждём доп. сумму
@@ -535,18 +535,37 @@ async def finish_reception(callback):
         "prod_id": None,
     }
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
-        ]
+    text = (
+        "🧾 Приёмка товара\n\n"
+        "💰 Введите дополнительную сумму.\n"
+        "Если доплаты нет — введите 0"
     )
 
-    await callback.message.answer(
-        "Введите дополнительную сумму.\n"
-        "Если доплаты нет — введите 0",
-        reply_markup=keyboard
-    )
-    await callback.answer()
+    ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
+
+    if ui_msg_id:
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=ui_msg_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
+                ]
+            )
+        )
+    else:
+        # на всякий случай (почти не должен срабатывать)
+        msg = await callback.message.answer(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Сбросить приёмку", callback_data="reset_confirm")]
+                ]
+            )
+        )
+        USER_UI_MESSA
+
 
 
 
@@ -981,34 +1000,42 @@ async def get_text(message: Message):
         USER_DATA.setdefault(user_id, {})
         USER_DATA[user_id]["extra"] = extra
 
+        # переходим к фото
         USER_STATE[user_id] = {"mode": "wait_photos", "fam_id": None, "prod_id": None}
-
-        ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
 
         text = (
             "🧾 Приёмка товара\n\n"
+            f"💰 Доп. сумма: {fmt(extra)}\n\n"
             "📸 Пришлите фото принятого товара.\n"
             "Когда закончите — нажмите «Готово»."
         )
 
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📦 Готово", callback_data="photos_done")]
-            ]
-        )
+        ui_msg_id = USER_UI_MESSAGE_ID.get(user_id)
 
         if ui_msg_id:
             await bot.edit_message_text(
                 chat_id=message.chat.id,
                 message_id=ui_msg_id,
                 text=text,
-                reply_markup=keyboard
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="📦 Готово", callback_data="photos_done")]
+                    ]
+                )
             )
         else:
-            msg = await message.answer(text, reply_markup=keyboard)
+            msg = await message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                    [InlineKeyboardButton(text="📦 Готово", callback_data="photos_done")]
+                    ]
+                )
+            )
             USER_UI_MESSAGE_ID[user_id] = msg.message_id
 
         return
+
 
 
 async def auto_finalize_drafts():
