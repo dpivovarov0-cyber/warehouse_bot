@@ -13,6 +13,19 @@ from aiogram.filters import Command
 
 from config import BOT_TOKEN
 
+# --- СПИСОК РАЗРЕШЕННЫХ ID ---
+# Добавьте сюда свой ID и ID сотрудников через запятую
+ALLOWED_USERS = [
+    516996400,  # Пиван
+    5122416809,  # Репа
+    334020724,  # Кор
+    516996400,  # Макс
+]
+
+# Функция-фильтр для проверки доступа
+def access_filter(message: Message) -> bool:
+    return message.from_user.id in ALLOWED_USERS
+
 # --- Apps Script: журнал ---
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwSXVi6APyb3Zz1eLchxTxERPXwNe3f6ecKRFV3CH7dhfqGB9djedwe_aB7-g4j4YY/exec"
 
@@ -352,6 +365,13 @@ def build_group_report_text(data: dict, status: str) -> str:
 
     return "\n".join(lines)
 
+
+@dp.message(Command("myid"), lambda m: m.chat.type == "private")
+async def show_user_id(message: Message):
+    await message.answer(
+        f"user_id = {message.from_user.id}\n"
+        f"chat_id = {message.chat.id}"
+    )
 
 @dp.message(Command("id"), lambda m: m.chat.type == "private")
 async def show_chat_id(message: Message):
@@ -1099,10 +1119,24 @@ async def auto_finalize_drafts():
         await asyncio.sleep(30)
 
 
+# 1. Добавьте этот блок перед функцией main
+@dp.update.outer_middleware()
+async def access_middleware(handler, event, data):
+    # Проверяем только сообщения и нажатия кнопок
+    user = data.get("event_from_user")
+    if user and user.id not in ALLOWED_USERS:
+        if event.message:
+            await event.message.answer("Ошибка")
+        elif event.callback_query:
+            await event.callback_query.answer("Ошибка", show_alert=True)
+        return
+    return await handler(event, data)
+
+# 2. Ваша функция main теперь будет выглядеть так:
 async def main():
+    # Никаких лишних строк в других частях кода не нужно!
     asyncio.create_task(auto_finalize_drafts())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
